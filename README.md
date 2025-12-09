@@ -1,0 +1,1 @@
+This Repository contains source code of paper "Deep Multi-Modal Fusion and Kalman Online Adaptation for Electric Load Forecasting Against Extreme Rainfall Events", which has been submmited to IEEE Transactions on Smart Grid for consideration.
