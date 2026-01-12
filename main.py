@@ -75,8 +75,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--mekf_Q0", type=float, default=0.0)
     p.add_argument("--mekf_mu_v", type=float, default=0.70)
     p.add_argument("--mekf_mu_p", type=float, default=0.80)
-    p.add_argument("--mekf_lamb", type=float, default=1.0)
-    p.add_argument("--mekf_delta", type=float, default=0.0)
+    p.add_argument("--mekf_lamb", type=float, default=0.98)
+    p.add_argument("--mekf_delta", type=float, default=0.08)
 
     # ---- misc ----
     p.add_argument("--seed", type=int, default=42)
@@ -377,3 +377,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
