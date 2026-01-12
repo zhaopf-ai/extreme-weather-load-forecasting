@@ -4,15 +4,8 @@ import torch.optim as optim
 import numpy as np
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 def gaussian_kernel(y, sigma=0.5):
-    """
-    Computes pairwise Gaussian kernel-based probabilities for sampling.
-    Args:
-        y: Target tensor of shape (batch_size, 1).
-        sigma: Bandwidth parameter.
-    Returns:
-        Probability matrix of shape (batch_size, batch_size).
-    """
     diff = y.unsqueeze(0) - y.unsqueeze(1)
     dist_squared = torch.sum(diff ** 2, dim=-1)
     kernel = torch.exp(-dist_squared / (2 * sigma ** 2))
