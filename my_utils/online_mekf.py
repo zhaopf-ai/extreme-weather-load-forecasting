@@ -49,7 +49,7 @@ class MEKFOnlineAdapter:
 
     def _compute_jacobian(self, pred):
         self.model.zero_grad()
-        pred_scalar = pred.mean()
+        pred_scalar = pred.view(-1)[0]
 
         grads = torch.autograd.grad(
             pred_scalar,
@@ -103,9 +103,13 @@ class MEKFOnlineAdapter:
             )
             H_t = self._compute_jacobian(pred)
 
-        y_hat = pred.view(-1)[0]
-        y_t = target.view(-1)[0]
+        y_hat_vec = pred.view(-1)
+        y_t_vec = target.view(-1)
+
+        y_hat = y_hat_vec[0]
+        y_t = y_t_vec[0]
         e_t = y_t - y_hat
+
 
         P_prior = self.P + self.Q
 
@@ -123,4 +127,5 @@ class MEKFOnlineAdapter:
         P_raw = P_post / self.lamb + self.delta
         self.P = self.mu_p * self.P + (1.0 - self.mu_p) * P_raw
 
-        return y_hat.detach().cpu(), y_t.detach().cpu()
+        return y_hat_vec.detach().cpu(), y_t_vec.detach().cpu()
+
