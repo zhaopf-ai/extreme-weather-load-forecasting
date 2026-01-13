@@ -3,7 +3,6 @@ import time as T
 from datetime import datetime
 import numpy as np
 import torch
-from my_utils.helper import compute_mape
 from my_utils.mixup import c_mixup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -184,8 +183,9 @@ class Trainer:
 
         predictions = np.concatenate(predictions)
         actuals = np.concatenate(actuals)
+        val_loss = np.mean(np.abs(predictions - actuals))
 
-        return compute_mape(predictions, actuals, self.scaler_y), val_samples
+        return val_loss, val_samples
 
 
 class TrainerMixup:
@@ -358,5 +358,6 @@ class TrainerMixup:
 
         predictions = np.concatenate(predictions)
         actuals = np.concatenate(actuals)
+        val_loss = np.mean(np.abs(predictions - actuals))
 
-        return compute_mape(predictions, actuals, self.scaler_y), val_samples
+        return val_loss, val_samples
