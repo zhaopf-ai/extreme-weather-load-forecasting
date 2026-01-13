@@ -16,8 +16,8 @@ from torch.utils.data import DataLoader
 
 from dataprocess.dataprocess import WeatherImageLoader, load_data
 from models.MultiModalFusion import MultiModalFusion
-from my_utils.Trainer import TrainerMixup, Trainer
-from my_utils.helper import compute_maermse, compute_mape, save_results_to_csv
+from my_utils.Trainer import Trainer
+from my_utils.helper import compute_maermse, compute_mape
 from my_utils.online_mekf import MEKFOnlineAdapter
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -40,8 +40,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # ---- data build ----
     p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--his_len", type=int, default=24)
-    p.add_argument("--pre_len", type=int, default=9)
+    p.add_argument("--his_len", type=int, default=6)
+    p.add_argument("--pre_len", type=int, default=1)
     p.add_argument("--add_weather_noise", action="store_true", default=True)
     p.add_argument("--no_weather_noise", dest="add_weather_noise", action="store_false")
     p.add_argument("--noise_seed", type=int, default=42)
@@ -62,7 +62,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--vit_heads", type=int, default=4)
 
     # ---- training ----
-    p.add_argument("--epochs", type=int, default=2)
+    p.add_argument("--epochs", type=int, default=500)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--scheduler_factor", type=float, default=0.5)
     p.add_argument("--scheduler_patience", type=int, default=10)
@@ -180,12 +180,6 @@ def print_flops_params(
     return flops_log_text
 
 
-
-class MAPE(nn.Module):
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
-        return torch.mean(torch.abs((y_true - y_pred) / y_true)) * 100
-
-
 def run_one_dataset(cfg: DatasetConfig, args: argparse.Namespace) -> None:
     data_root = Path(args.data_root)
     exp_root = Path(args.exp_root)
@@ -198,17 +192,13 @@ def run_one_dataset(cfg: DatasetConfig, args: argparse.Namespace) -> None:
     run_tag = f"{cfg.name}_{args.image_backbone}"
 
     model_path = exp_root / "model_saved" / f"best_model_{run_tag}.pth"
-    pred_path = exp_root / f"predictions_{run_tag}.csv"
-
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    pred_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"\n================ Dataset: {cfg.name} ================")
     print(f"img_dir      : {img_dir}")
     print(f"data_path    : {data_path}")
     print(f"processed_dir: {processed_dir}")
     print(f"model_path   : {model_path}")
-    print(f"pred_path    : {pred_path}")
     print("====================================================\n")
 
     weather_loader = WeatherImageLoader(str(img_dir), str(processed_dir))
@@ -257,7 +247,7 @@ def run_one_dataset(cfg: DatasetConfig, args: argparse.Namespace) -> None:
         )
 
 
-    criterion = MAPE()
+    criterion = nn.L1Loss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = ReduceLROnPlateau(
         optimizer,
@@ -341,27 +331,11 @@ def run_one_dataset(cfg: DatasetConfig, args: argparse.Namespace) -> None:
 
     online_times_arr = np.asarray(online_times, dtype=np.float64)
     print(f"[Online] avg time per sample: {online_times_arr.mean()*1000:.2f} ms ({online_times_arr.mean():.6f} s)")
-
-    time_file = pred_path.with_name(pred_path.stem + "_online_time.csv")
-    np.savetxt(time_file, online_times_arr, delimiter=",", header="time_s", comments="")
-    print(f"[Online] per-sample time saved to: {time_file}")
-
     online_predictions_arr = np.stack(online_predictions, axis=0)
     online_actuals_arr = np.stack(online_actuals, axis=0)
-
-    online_predictions_denorm = scaler_y * online_predictions_arr
-    online_actuals_denorm = scaler_y * online_actuals_arr
-
     mape = compute_mape(online_predictions_arr, online_actuals_arr, scaler_y)
     rmse, mae = compute_maermse(online_predictions_arr, online_actuals_arr, scaler_y)
-    print(f"[Online] MAPE: {mape:.3f}%, RMSE: {rmse:.3f}, MAE: {mae:.3f}")
-
-    out_file = pred_path.with_name(pred_path.stem + "_online.csv")
-    save_results_to_csv(
-        online_predictions_denorm,
-        online_actuals_denorm,
-        output_file=str(out_file),
-    )
+    print(f"[Online] MAPE: {mape:.3f}, RMSE: {rmse:.3f}, MAE: {mae:.3f}")
 
 
 def main() -> None:
@@ -377,4 +351,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
