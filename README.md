@@ -38,4 +38,23 @@ pip install torch==1.12.1 torchvision==0.13.1
 pip install numpy==1.21.6 pandas==1.3.5
 pip install fvcore einops pillow
 
+---
+
+## How to Run
+
+### Step 1: Basic command
+
+Run the model on a dataset:
+
+```bash
+python main.py --datasets Gympie
+
+python main.py \
+    --datasets Gympie \
+    --his_len 6 \
+    --pre_len 1 \
+    --batch_size 32 \
+    --epochs 200 \
+    --lr 1e-3
+
 
