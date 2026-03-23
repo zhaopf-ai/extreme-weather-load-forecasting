@@ -15,13 +15,13 @@ For questions or issues, please open a GitHub issue or contact:
 All experiments were conducted using the following environment:
 
 - Python == 3.8  
-- torch == 1.12.1  
-- torchvision == 0.13.1  
-- numpy == 1.21.6  
-- pandas == 1.3.5  
+- torch == 2.4.1  
+- torchvision == 0.19.1  
+- numpy == 1.19.5  
+- pandas == 1.2.5  
 - fvcore == 0.1.5.post20221221  
-- einops == 0.6.0  
-- pillow == 9.5.0  
+- einops == 0.8.0  
+- Pillow == 10.0.0
 
 ---
 
