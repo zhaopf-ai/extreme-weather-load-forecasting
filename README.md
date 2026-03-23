@@ -29,13 +29,16 @@ All experiments were conducted using the following environment:
 
 Place the dataset under the directory `data/`. Each dataset should include a tabular file and corresponding image folders.
 
-Example structure:
+The datasets used in this work are derived from real-world data sources in Australia, including:
 
-```bash
-data/
- ├── Gym.npz
- ├── processed_image/
-```
+- Load data from Australian distribution networks:  
+  https://www.energex.com.au/our-network/network-data  
+
+- Satellite weather images from Meteoblue:  
+  https://www.meteoblue.com  
+
+- Numerical weather forecasts (NWFs) from World Weather Online:  
+  https://www.worldweatheronline.com  
 
 ---
 
