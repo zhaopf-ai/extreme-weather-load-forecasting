@@ -34,18 +34,8 @@ Example structure:
 ```bash
 data/
  ├── Gym.npz
- ├── modified/
  ├── processed_image/
 ```
-
-The tabular data should contain:
-
-- Load (first column)  
-- Weather variables: tempC, windspeedKmph, precipMM, humidity  
-- Calendar features: hour_*, weekday_*  
-- Lag features:  
-  - load_1_days_ago ... load_6_days_ago  
-  - load_1_weeks_ago ... load_4_weeks_ago  
 
 ---
 
