@@ -42,19 +42,9 @@ pip install fvcore einops pillow
 
 ## How to Run
 
-### Step 1: Basic command
-
-Run the model on a dataset:
+### Basic command
 
 ```bash
 python main.py --datasets Gympie
-
-python main.py \
-    --datasets Gympie \
-    --his_len 6 \
-    --pre_len 1 \
-    --batch_size 32 \
-    --epochs 200 \
-    --lr 1e-3
 
 
