@@ -54,10 +54,5 @@ Open `main.py` and run it directly.
 
 ```bash
 python main.py --datasets Gympie \
-    --his_len 6 \
-    --pre_len 1 \
-    --batch_size 32 \
-    --epochs 200 \
-    --lr 1e-3
 
 
