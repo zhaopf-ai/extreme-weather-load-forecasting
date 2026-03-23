@@ -40,7 +40,7 @@ pip install fvcore einops pillow
 
 ---
 
-## How to Run
+### How to Run
 
 ### Basic command
 
