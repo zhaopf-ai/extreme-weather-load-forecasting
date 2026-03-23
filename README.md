@@ -27,9 +27,7 @@ All experiments were conducted using the following environment:
 
 ## Dataset
 
-Place the dataset under the directory `data/`. Each dataset should include a tabular file and corresponding image folders.
-
-The datasets used in this work are derived from real-world data sources in Australia, including:
+Place the dataset under the directory `data/`. The datasets used in this work are derived from real-world data sources in Australia, including:
 
 - Load data from Australian distribution networks:  
   https://www.energex.com.au/our-network/network-data  
