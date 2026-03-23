@@ -35,7 +35,7 @@ Place the dataset under the directory `data/`. The datasets used in this work ar
 - Satellite weather images from Meteoblue:  
   https://www.meteoblue.com  
 
-- Numerical weather forecasts (NWFs) from World Weather Online:  
+- Numerical weather data from World Weather Online:  
   https://www.worldweatheronline.com  
 
 ---
