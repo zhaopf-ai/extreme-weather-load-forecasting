@@ -42,16 +42,22 @@ Place the dataset under the directory `data/`. The datasets used in this work ar
 
 ## How to Run
 
-Run the model with default settings:
+After setting appropriate hyperparameters in `main.py`, the model can be executed in two ways:
+
+### 1: Run directly (recommended for IDE users)
+
+Open `main.py` and run it directly.
+
+---
+
+### 2: Run via command line
 
 ```bash
-python main.py --datasets Gympie\
-    --datasets Gympie \
+python main.py --datasets Gympie \
     --his_len 6 \
     --pre_len 1 \
     --batch_size 32 \
     --epochs 200 \
     --lr 1e-3
-```
 
 
