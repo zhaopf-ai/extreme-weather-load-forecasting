@@ -1,7 +1,3 @@
-This repository provides the source code for the paper: "Deep Multi-Modal Fusion and Kalman Online Adaptation for Electric Load Forecasting Against Extreme Rainfall Events" (submitted to IEEE Transactions on Smart Grid).
-
-For questions or issues, please open a GitHub issue or contact: zhaopf@std.uestc.edu.cn
-
 # Deep Multi-Modal Fusion and Kalman Online Adaptation for Electric Load Forecasting
 
 This repository provides the source code for the paper:
@@ -37,14 +33,108 @@ All experiments were conducted using the following environment:
 pip install torch==1.12.1 torchvision==0.13.1
 pip install numpy==1.21.6 pandas==1.3.5
 pip install fvcore einops pillow
+```
 
 ---
 
-### How to Run
+## Dataset
 
-### Basic command
+Place the dataset under the directory `data/`. Each dataset should include a tabular file and corresponding image folders.
+
+Example structure:
+
+```bash
+data/
+ ├── Gym.npz
+ ├── modified/
+ ├── processed_image/
+```
+
+The tabular data should contain:
+
+- Load (first column)  
+- Weather variables: tempC, windspeedKmph, precipMM, humidity  
+- Calendar features: hour_*, weekday_*  
+- Lag features:  
+  - load_1_days_ago ... load_6_days_ago  
+  - load_1_weeks_ago ... load_4_weeks_ago  
+
+---
+
+## How to Run
+
+Run the model with default settings:
 
 ```bash
 python main.py --datasets Gympie
+```
 
+Run with full configuration:
 
+```bash
+python main.py \
+    --datasets Gympie \
+    --his_len 6 \
+    --pre_len 1 \
+    --batch_size 32 \
+    --epochs 200 \
+    --lr 1e-3
+```
+
+Optional arguments:
+
+- --his_len : history length (default: 6)  
+- --pre_len : prediction horizon (default: 1)  
+- --batch_size : batch size (default: 32)  
+- --epochs : number of training epochs (default: 500)  
+- --lr : learning rate (default: 1e-3)  
+
+Run multiple datasets:
+
+```bash
+python main.py --datasets Gympie Coolum Noosaville
+```
+
+---
+
+## Output
+
+After training, results are saved to:
+
+- results/model_saved/  
+- results/logs/  
+
+---
+
+## Evaluation
+
+The following metrics are reported:
+
+- MAPE  
+- RMSE  
+- MAE  
+
+---
+
+## Notes
+
+Disable weather noise augmentation if needed:
+
+```bash
+python main.py --no_weather_noise
+```
+
+GPU is recommended for faster training.
+
+---
+
+## Reproducibility
+
+Random seed is fixed:
+
+```python
+torch.manual_seed(42)
+np.random.seed(42)
+```
+
+Time-based data split is adopted for evaluation.
