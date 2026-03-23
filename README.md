@@ -45,12 +45,6 @@ Run the model with default settings:
 
 ```bash
 python main.py --datasets Gympie
-```
-
-Run with full configuration:
-
-```bash
-python main.py \
     --datasets Gympie \
     --his_len 6 \
     --pre_len 1 \
