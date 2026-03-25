@@ -536,6 +536,15 @@ def train_model(model, train_loader, val_loader, cfg: TrainConfig, device):
     best_epoch = 0
     wait = 0
 
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.5,
+        patience=20,
+        min_lr=1e-5,
+        verbose=True,
+    )
+
     for epoch in range(1, cfg.epochs + 1):
         model.train()
         for past, daily, weekly, weather, time_feat, y in train_loader:
@@ -553,6 +562,8 @@ def train_model(model, train_loader, val_loader, cfg: TrainConfig, device):
             optimizer.step()
 
         val_loss, _, _ = evaluate_model(model, val_loader, device)
+
+        scheduler.step(val_loss)
 
         if val_loss < best_val:
             best_val = val_loss
