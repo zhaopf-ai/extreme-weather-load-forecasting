@@ -12,11 +12,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _read_tabular(file_path: str) -> pd.DataFrame:
-    """Read tabular data from .csv or .npz.
-
-    - .csv: read via pandas
-    - .npz: expects keys {data, columns}
-    """
     fp = str(file_path)
     fp_l = fp.lower()
 
@@ -31,10 +26,7 @@ def _read_tabular(file_path: str) -> pd.DataFrame:
             data = z["data"]
             cols = [str(c) for c in z["columns"].tolist()]
             return pd.DataFrame(data, columns=cols)
-
-        raise ValueError(
-            f"Invalid npz format: {fp}. Expected 'records' or ('data' and 'columns')."
-        )
+        raise ValueError(f"Invalid npz format: {fp}. Expected 'records' or ('data' and 'columns').")
 
     raise ValueError(f"Unsupported file type: {fp}. Use .csv or .npz")
 
@@ -49,10 +41,11 @@ def load_data_from_file(
     train_end_date="2021-11-30",
     val_start_date="2021-12-01",
     val_end_date="2021-12-31",
-    test_start_date="2022-01-01",
-    test_end_date=None,
+    online_val_start_date="2022-01-01",
+    online_val_end_date="2022-02-10",
+    test_start_date="2022-02-11",
+    test_end_date="2022-03-04",
 ):
-    # Supports both .csv and .npz (recommended).
     data = _read_tabular(file_path)
 
     year = data["year"].values.astype(np.int32)
@@ -63,12 +56,15 @@ def load_data_from_file(
     row_ts = pd.to_datetime(data[["year", "month", "day", "hour"]])
 
     train_end_ts = pd.Timestamp(train_end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+
     val_start_ts = pd.Timestamp(val_start_date)
     val_end_ts = pd.Timestamp(val_end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+
+    online_val_start_ts = pd.Timestamp(online_val_start_date)
+    online_val_end_ts = pd.Timestamp(online_val_end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+
     test_start_ts = pd.Timestamp(test_start_date)
-    test_end_ts = None if test_end_date is None else (
-        pd.Timestamp(test_end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    )
+    test_end_ts = pd.Timestamp(test_end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
     train_row_mask = row_ts <= train_end_ts
 
@@ -76,7 +72,6 @@ def load_data_from_file(
     scaler_y = float(np.max(load[train_row_mask]))
     if scaler_y <= 0:
         raise ValueError("Training load max <= 0, normalization invalid.")
-
     load_norm = load / scaler_y
 
     weather_cols = ["tempC", "windspeedKmph", "precipMM", "humidity"]
@@ -88,8 +83,22 @@ def load_data_from_file(
     if not time_cols:
         raise ValueError("No time one-hot columns found.")
 
+    def _extract_lag_cols(columns, suffix):
+        cols = [c for c in columns if c.startswith("load_") and c.endswith(suffix)]
+        cols_sorted = sorted(cols, key=lambda x: int(x.split("_")[1]))
+        return cols_sorted
+
+    daily_cols = _extract_lag_cols(data.columns, "_days_ago")
+    weekly_cols = _extract_lag_cols(data.columns, "_weeks_ago")
+
+    for c in daily_cols + weekly_cols:
+        if c not in data.columns:
+            raise ValueError(f"Missing lag column: {c}")
+
     weather_raw = data[weather_cols].values.astype(np.float32)
     time_raw = data[time_cols].values.astype(np.float32)
+    daily_raw = data[daily_cols].values.astype(np.float32)
+    weekly_raw = data[weekly_cols].values.astype(np.float32)
 
     rng = np.random.default_rng(noise_seed)
     precip_cv_1to9 = np.array([0.60, 0.70, 0.80, 0.90, 1.00, 1.10, 1.20, 1.25, 1.30], dtype=np.float32)
@@ -105,16 +114,21 @@ def load_data_from_file(
     time = time_raw / time_max
     time_feat_dim = time.shape[1]
 
+    daily = daily_raw / scaler_y
+    weekly = weekly_raw / scaler_y
+
     N = len(load_norm)
     if N < his_length + pre_length:
         raise ValueError("Insufficient data length.")
 
-    X_past, y, X_w, X_t = [], [], [], []
+    X_past, X_daily, X_weekly, y, X_w, X_t = [], [], [], [], [], []
     Y, M, D, H = [], [], [], []
     ts_start = []
 
     for i in range(his_length, N - pre_length + 1):
         X_past.append(load_norm[i - his_length:i])
+        X_daily.append(daily[i])
+        X_weekly.append(weekly[i])
         y.append(load_norm[i:i + pre_length])
 
         if add_weather_noise:
@@ -145,6 +159,8 @@ def load_data_from_file(
         ts_start.append(row_ts.iloc[i])
 
     X_past = np.asarray(X_past, np.float32)
+    X_daily = np.asarray(X_daily, np.float32)
+    X_weekly = np.asarray(X_weekly, np.float32)
     y = np.asarray(y, np.float32)
     X_w = np.asarray(X_w, np.float32)
     X_t = np.asarray(X_t, np.float32)
@@ -159,14 +175,15 @@ def load_data_from_file(
 
     train_mask = ts_end <= train_end_ts
     val_mask = (ts_start >= val_start_ts) & (ts_end <= val_end_ts)
-    test_mask = ts_start >= test_start_ts if test_end_ts is None else (
-        (ts_start >= test_start_ts) & (ts_end <= test_end_ts)
-    )
+    online_val_mask = (ts_start >= online_val_start_ts) & (ts_end <= online_val_end_ts)
+    test_mask = (ts_start >= test_start_ts) & (ts_end <= test_end_ts)
 
-    def _build_loader(mask):
+    def _build_dataset(mask):
         return TensorDataset(
             torch.tensor(X_w[mask]),
             torch.tensor(X_past[mask]),
+            torch.tensor(X_daily[mask]),
+            torch.tensor(X_weekly[mask]),
             torch.tensor(X_t[mask]),
             torch.tensor(y[mask]),
             torch.tensor(Y[mask]),
@@ -175,15 +192,19 @@ def load_data_from_file(
             torch.tensor(H[mask]),
         )
 
-    train_loader = DataLoader(_build_loader(train_mask), batch_size=batch_size, shuffle=False)
-    val_loader = DataLoader(_build_loader(val_mask), batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(_build_loader(test_mask), batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(_build_dataset(train_mask), batch_size=batch_size, shuffle=False)
+    val_loader = DataLoader(_build_dataset(val_mask), batch_size=batch_size, shuffle=False)
+    online_val_loader = DataLoader(_build_dataset(online_val_mask), batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(_build_dataset(test_mask), batch_size=batch_size, shuffle=False)
 
-    print(f"[Split] train={train_mask.sum()}, val={val_mask.sum()}, test={test_mask.sum()}")
+    print(
+        f"[Split] train={train_mask.sum()}, "
+        f"val={val_mask.sum()}, "
+        f"online_val={online_val_mask.sum()}, "
+        f"test={test_mask.sum()}"
+    )
 
-    return train_loader, val_loader, test_loader, scaler_y, time_feat_dim
-
-
+    return train_loader, val_loader, online_val_loader, test_loader, scaler_y, time_feat_dim
 
 
 def load_data(*args, **kwargs):
@@ -191,7 +212,6 @@ def load_data(*args, **kwargs):
 
 
 class WeatherImageLoader:
-
     def __init__(self, img_dir, processed_dir, image_size=(224, 224)):
         self.img_dir = img_dir
         self.processed_dir = processed_dir
@@ -209,7 +229,6 @@ class WeatherImageLoader:
         os.makedirs(self.processed_dir, exist_ok=True)
 
     def load_images_for_hour(self, timestamp):
-        """Return cached image tensor or build from 15-min intervals."""
         cache_name = f"cached_{timestamp.strftime('%Y%m%dT%H%M%S')}.pt"
         cache_path = os.path.join(self.processed_dir, cache_name)
 
