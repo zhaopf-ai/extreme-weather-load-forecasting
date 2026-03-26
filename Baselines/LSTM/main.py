@@ -104,9 +104,16 @@ class TrainConfig:
     lstm_layers: int = 2
     lstm_units: int = 100
     hist_dense_units: int = 32
-    cov_dense_units1: int = 128
-    cov_dense_units2: int = 64
-    fusion_units: int = 64
+
+    lag_mlp_units1: int = 64
+    lag_mlp_units2: int = 32
+    weather_mlp_units1: int = 64
+    weather_mlp_units2: int = 32
+    time_mlp_units1: int = 64
+    time_mlp_units2: int = 32
+
+    fusion_units1: int = 128
+    fusion_units2: int = 64
 
     lr: float = 1e-3
     lr_factor: float = 0.5
@@ -114,7 +121,7 @@ class TrainConfig:
     min_lr: float = 1e-6
 
     batch_size: int = 128
-    epochs: int = 500
+    epochs: int = 5
     early_stopping_patience: int = 30
 
     random_state: int = 42
@@ -149,9 +156,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--lstm_layers", type=int, default=2)
     p.add_argument("--lstm_units", type=int, default=100)
     p.add_argument("--hist_dense_units", type=int, default=32)
-    p.add_argument("--cov_dense_units1", type=int, default=128)
-    p.add_argument("--cov_dense_units2", type=int, default=64)
-    p.add_argument("--fusion_units", type=int, default=64)
+
+    p.add_argument("--lag_mlp_units1", type=int, default=64)
+    p.add_argument("--lag_mlp_units2", type=int, default=32)
+    p.add_argument("--weather_mlp_units1", type=int, default=64)
+    p.add_argument("--weather_mlp_units2", type=int, default=32)
+    p.add_argument("--time_mlp_units1", type=int, default=64)
+    p.add_argument("--time_mlp_units2", type=int, default=32)
+
+    p.add_argument("--fusion_units1", type=int, default=128)
+    p.add_argument("--fusion_units2", type=int, default=64)
 
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--lr_factor", type=float, default=0.99)
@@ -159,8 +173,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--min_lr", type=float, default=1e-6)
 
     p.add_argument("--batch_size", type=int, default=128)
-    p.add_argument("--epochs", type=int, default=1)
-    p.add_argument("--early_stopping_patience", type=int, default=10)
+    p.add_argument("--epochs", type=int, default=5)
+    p.add_argument("--early_stopping_patience", type=int, default=30)
 
     p.add_argument("--random_state", type=int, default=42)
     p.add_argument("--device", type=str, default="cuda")
@@ -185,9 +199,14 @@ def make_config(args: argparse.Namespace) -> TrainConfig:
         lstm_layers=args.lstm_layers,
         lstm_units=args.lstm_units,
         hist_dense_units=args.hist_dense_units,
-        cov_dense_units1=args.cov_dense_units1,
-        cov_dense_units2=args.cov_dense_units2,
-        fusion_units=args.fusion_units,
+        lag_mlp_units1=args.lag_mlp_units1,
+        lag_mlp_units2=args.lag_mlp_units2,
+        weather_mlp_units1=args.weather_mlp_units1,
+        weather_mlp_units2=args.weather_mlp_units2,
+        time_mlp_units1=args.time_mlp_units1,
+        time_mlp_units2=args.time_mlp_units2,
+        fusion_units1=args.fusion_units1,
+        fusion_units2=args.fusion_units2,
         lr=args.lr,
         lr_factor=args.lr_factor,
         lr_patience=args.lr_patience,
@@ -274,14 +293,18 @@ def build_samples_from_file(
         raise ValueError("Insufficient data length.")
 
     X_hist = []
-    X_cov = []
+    X_lag = []
+    X_weather = []
+    X_time = []
     Y = []
     ts_start = []
 
     for i in range(his_length, n - pre_length + 1):
         x_hist = load_norm[i - his_length:i].reshape(his_length, 1)
-        x_daily = daily[i]
-        x_weekly = weekly[i]
+
+        x_daily = daily[i:i + pre_length]
+        x_weekly = weekly[i:i + pre_length]
+        x_lag = np.concatenate([x_daily, x_weekly], axis=1)
 
         if add_weather_noise:
             w = weather_raw[i:i + pre_length].copy()
@@ -295,21 +318,24 @@ def build_samples_from_file(
             w[:, 1] = np.clip(w[:, 1], 0, None)
             w[:, 2] = np.clip(w[:, 2], 0, None)
             w[:, 3] = np.clip(w[:, 3], 0, 100)
-            x_weather = (w / weather_max).reshape(-1)
+            x_weather = w / weather_max
         else:
-            x_weather = weather[i:i + pre_length].reshape(-1)
+            x_weather = weather[i:i + pre_length]
 
-        x_time = time[i:i + pre_length].reshape(-1)
-        x_cov = np.concatenate([x_daily, x_weekly, x_weather, x_time], axis=0)
+        x_time = time[i:i + pre_length]
         y = load_norm[i:i + pre_length]
 
         X_hist.append(x_hist)
-        X_cov.append(x_cov)
-        Y.append(y)
+        X_lag.append(x_lag.astype(np.float32))
+        X_weather.append(x_weather.astype(np.float32))
+        X_time.append(x_time.astype(np.float32))
+        Y.append(y.astype(np.float32))
         ts_start.append(row_ts.iloc[i])
 
     X_hist = np.asarray(X_hist, dtype=np.float32)
-    X_cov = np.asarray(X_cov, dtype=np.float32)
+    X_lag = np.asarray(X_lag, dtype=np.float32)
+    X_weather = np.asarray(X_weather, dtype=np.float32)
+    X_time = np.asarray(X_time, dtype=np.float32)
     Y = np.asarray(Y, dtype=np.float32)
 
     ts_start = pd.to_datetime(ts_start)
@@ -337,28 +363,38 @@ def build_samples_from_file(
         "weekly_cols": weekly_cols,
         "history_len": int(his_length),
         "hist_dim": 1,
-        "cov_dim": int(X_cov.shape[1]),
+        "lag_dim": int(X_lag.shape[2]),
+        "weather_dim": int(X_weather.shape[2]),
+        "time_dim": int(X_time.shape[2]),
         "pre_len": int(pre_length),
     }
 
-    return X_hist, X_cov, Y, split, meta
+    return X_hist, X_lag, X_weather, X_time, Y, split, meta
 
 
-class LSTMFusionModel(nn.Module):
+class LSTM(nn.Module):
     def __init__(
         self,
-        history_len: int,
         hist_dim: int,
-        cov_dim: int,
+        lag_dim: int,
+        weather_dim: int,
+        time_dim: int,
         pre_len: int,
         lstm_layers: int = 2,
         lstm_units: int = 100,
         hist_dense_units: int = 32,
-        cov_dense_units1: int = 128,
-        cov_dense_units2: int = 64,
-        fusion_units: int = 64,
+        lag_mlp_units1: int = 64,
+        lag_mlp_units2: int = 32,
+        weather_mlp_units1: int = 64,
+        weather_mlp_units2: int = 32,
+        time_mlp_units1: int = 64,
+        time_mlp_units2: int = 32,
+        fusion_units1: int = 128,
+        fusion_units2: int = 64,
     ):
         super().__init__()
+        self.pre_len = pre_len
+
         self.lstm = nn.LSTM(
             input_size=hist_dim,
             hidden_size=lstm_units,
@@ -367,32 +403,50 @@ class LSTMFusionModel(nn.Module):
         )
         self.hist_dense = nn.Linear(lstm_units, hist_dense_units)
 
-        self.cov_dense1 = nn.Linear(cov_dim, cov_dense_units1)
-        self.cov_dense2 = nn.Linear(cov_dense_units1, cov_dense_units2)
+        self.lag_mlp1 = nn.Linear(lag_dim, lag_mlp_units1)
+        self.lag_mlp2 = nn.Linear(lag_mlp_units1, lag_mlp_units2)
 
-        self.fusion_dense = nn.Linear(hist_dense_units + cov_dense_units2, fusion_units)
-        self.out = nn.Linear(fusion_units, pre_len)
+        self.weather_mlp1 = nn.Linear(weather_dim, weather_mlp_units1)
+        self.weather_mlp2 = nn.Linear(weather_mlp_units1, weather_mlp_units2)
 
-    def forward(self, x_hist, x_cov):
+        self.time_mlp1 = nn.Linear(time_dim, time_mlp_units1)
+        self.time_mlp2 = nn.Linear(time_mlp_units1, time_mlp_units2)
+
+        fusion_in_dim = hist_dense_units + lag_mlp_units2 + weather_mlp_units2 + time_mlp_units2
+        self.fusion_mlp1 = nn.Linear(fusion_in_dim, fusion_units1)
+        self.fusion_mlp2 = nn.Linear(fusion_units1, fusion_units2)
+        self.out = nn.Linear(fusion_units2, 1)
+
+    def forward(self, x_hist, x_lag, x_weather, x_time):
         h, _ = self.lstm(x_hist)
         h = h[:, -1, :]
-        h = self.hist_dense(h)
+        h = F.relu(self.hist_dense(h))
+        h = h.unsqueeze(1).expand(-1, self.pre_len, -1)
 
-        c = F.relu(self.cov_dense1(x_cov))
-        c = F.relu(self.cov_dense2(c))
+        lag_feat = F.relu(self.lag_mlp1(x_lag))
+        lag_feat = F.relu(self.lag_mlp2(lag_feat))
 
-        z = torch.cat([h, c], dim=1)
-        z = F.relu(self.fusion_dense(z))
-        y = self.out(z)
+        weather_feat = F.relu(self.weather_mlp1(x_weather))
+        weather_feat = F.relu(self.weather_mlp2(weather_feat))
+
+        time_feat = F.relu(self.time_mlp1(x_time))
+        time_feat = F.relu(self.time_mlp2(time_feat))
+
+        z = torch.cat([h, lag_feat, weather_feat, time_feat], dim=-1)
+        z = F.relu(self.fusion_mlp1(z))
+        z = F.relu(self.fusion_mlp2(z))
+        y = self.out(z).squeeze(-1)
         return y
 
 
-def make_loader(X_hist, X_cov, Y, mask, batch_size, shuffle):
+def make_loader(X_hist, X_lag, X_weather, X_time, Y, mask, batch_size, shuffle):
     xh = torch.from_numpy(X_hist[mask]).float()
-    xc = torch.from_numpy(X_cov[mask]).float()
+    xl = torch.from_numpy(X_lag[mask]).float()
+    xw = torch.from_numpy(X_weather[mask]).float()
+    xt = torch.from_numpy(X_time[mask]).float()
     y = torch.from_numpy(Y[mask]).float()
 
-    ds = TensorDataset(xh, xc, y)
+    ds = TensorDataset(xh, xl, xw, xt, y)
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=False)
 
 
@@ -404,12 +458,14 @@ def evaluate_model(model, loader, device):
     total_n = 0
 
     with torch.no_grad():
-        for xh, xc, y in loader:
+        for xh, xl, xw, xt, y in loader:
             xh = xh.to(device)
-            xc = xc.to(device)
+            xl = xl.to(device)
+            xw = xw.to(device)
+            xt = xt.to(device)
             y = y.to(device)
 
-            pred = model(xh, xc)
+            pred = model(xh, xl, xw, xt)
             loss = mape_loss(pred, y)
 
             bs = y.size(0)
@@ -442,13 +498,15 @@ def train_model(model, train_loader, val_loader, cfg: TrainConfig, device):
 
     for epoch in range(1, cfg.epochs + 1):
         model.train()
-        for xh, xc, y in train_loader:
+        for xh, xl, xw, xt, y in train_loader:
             xh = xh.to(device)
-            xc = xc.to(device)
+            xl = xl.to(device)
+            xw = xw.to(device)
+            xt = xt.to(device)
             y = y.to(device)
 
             optimizer.zero_grad(set_to_none=True)
-            pred = model(xh, xc)
+            pred = model(xh, xl, xw, xt)
             loss = mape_loss(pred, y)
             loss.backward()
             optimizer.step()
@@ -515,7 +573,7 @@ def run_one_dataset(ds_cfg: DatasetConfig, cfg: TrainConfig):
 
     t0 = time.time()
 
-    X_hist, X_cov, Y, split, meta = build_samples_from_file(
+    X_hist, X_lag, X_weather, X_time, Y, split, meta = build_samples_from_file(
         file_path=str(data_path),
         his_length=cfg.his_len,
         pre_length=cfg.pre_len,
@@ -537,28 +595,38 @@ def run_one_dataset(ds_cfg: DatasetConfig, cfg: TrainConfig):
             f"Empty split detected: train={train_mask.sum()}, val={val_mask.sum()}, test={test_mask.sum()}"
         )
 
-    train_loader = make_loader(X_hist, X_cov, Y, train_mask, cfg.batch_size, False)
-    val_loader = make_loader(X_hist, X_cov, Y, val_mask, cfg.batch_size, False)
-    test_loader = make_loader(X_hist, X_cov, Y, test_mask, cfg.batch_size, False)
+    train_loader = make_loader(X_hist, X_lag, X_weather, X_time, Y, train_mask, cfg.batch_size, False)
+    val_loader = make_loader(X_hist, X_lag, X_weather, X_time, Y, val_mask, cfg.batch_size, False)
+    test_loader = make_loader(X_hist, X_lag, X_weather, X_time, Y, test_mask, cfg.batch_size, False)
 
-    model = LSTMFusionModel(
-        history_len=meta["history_len"],
+    model = LSTM(
         hist_dim=meta["hist_dim"],
-        cov_dim=meta["cov_dim"],
+        lag_dim=meta["lag_dim"],
+        weather_dim=meta["weather_dim"],
+        time_dim=meta["time_dim"],
         pre_len=cfg.pre_len,
         lstm_layers=cfg.lstm_layers,
         lstm_units=cfg.lstm_units,
         hist_dense_units=cfg.hist_dense_units,
-        cov_dense_units1=cfg.cov_dense_units1,
-        cov_dense_units2=cfg.cov_dense_units2,
-        fusion_units=cfg.fusion_units,
+        lag_mlp_units1=cfg.lag_mlp_units1,
+        lag_mlp_units2=cfg.lag_mlp_units2,
+        weather_mlp_units1=cfg.weather_mlp_units1,
+        weather_mlp_units2=cfg.weather_mlp_units2,
+        time_mlp_units1=cfg.time_mlp_units1,
+        time_mlp_units2=cfg.time_mlp_units2,
+        fusion_units1=cfg.fusion_units1,
+        fusion_units2=cfg.fusion_units2,
     ).to(device)
 
     print(f"Train: {int(train_mask.sum())} | Val: {int(val_mask.sum())} | Test: {int(test_mask.sum())}")
     print(f"Train range: <= {cfg.train_end_date}")
     print(f"Val range  : {cfg.val_start_date} to {cfg.val_end_date}")
     print(f"Test range : {cfg.test_start_date} to {cfg.test_end_date}")
-    print(f"train_hist={X_hist[train_mask].shape}, train_cov={X_cov[train_mask].shape}, train_y={Y[train_mask].shape}")
+    print(f"train_hist={X_hist[train_mask].shape}")
+    print(f"train_lag={X_lag[train_mask].shape}")
+    print(f"train_weather={X_weather[train_mask].shape}")
+    print(f"train_time={X_time[train_mask].shape}")
+    print(f"train_y={Y[train_mask].shape}")
 
     model, best_val, best_epoch, lr_history = train_model(model, train_loader, val_loader, cfg, device)
 
