@@ -10,9 +10,8 @@ from models.GMMF import GatedMultimodalLayer
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class MultiModalFusion(nn.Module):
-    """Multimodal forecasting model with image, weather, load, and time inputs."""
 
+class MultiModalFusion(nn.Module):
     def __init__(
         self,
         weather_loader,
@@ -23,6 +22,8 @@ class MultiModalFusion(nn.Module):
         vit_depth=4,
         vit_heads=4,
         past_len=17,
+        daily_len=7,
+        weekly_len=4,
         pred_len=1,
         time_feat_dim=24,
         weather_feat_dim=4,
@@ -34,6 +35,8 @@ class MultiModalFusion(nn.Module):
         self.depth = depth
         self.image_seq_len = image_seq_len
         self.past_len = past_len
+        self.daily_len = daily_len
+        self.weekly_len = weekly_len
         self.pred_len = pred_len
 
         self.patch_size = 16
@@ -69,8 +72,13 @@ class MultiModalFusion(nn.Module):
             self.mixer_outs = nn.ModuleList([nn.Linear(dim, dim) for _ in range(depth)])
 
         elif self.image_backbone == "cnn3d":
-            self.cnn3d = ResNet3DEncoder(depth=18, in_ch=3, base_channels=75, temporal_downsample=False, out_dim=dim)
-
+            self.cnn3d = ResNet3DEncoder(
+                depth=18,
+                in_ch=3,
+                base_channels=75,
+                temporal_downsample=False,
+                out_dim=dim,
+            )
 
         elif self.image_backbone == "vit":
             self.vit_frame = ViT(
@@ -94,15 +102,53 @@ class MultiModalFusion(nn.Module):
             nn.Linear(dim, dim),
         )
 
-        self.tcn_load = nn.Sequential(
+        self.tcn_past = nn.Sequential(
             nn.Conv1d(1, dim, 3, padding=1),
             nn.ReLU(),
             nn.Conv1d(dim, dim, 3, padding=1),
             nn.ReLU(),
         )
 
+        self.tcn_daily = nn.Sequential(
+            nn.Conv1d(1, dim, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(dim, dim, 3, padding=1),
+            nn.ReLU(),
+        )
+
+        self.tcn_weekly = nn.Sequential(
+            nn.Conv1d(1, dim, 2, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(dim, dim, 2, padding=1),
+            nn.ReLU(),
+        )
+
         self.past_load_mlp = nn.Sequential(
             nn.Linear(dim, dim),
+            nn.ReLU(),
+            nn.Linear(dim, dim),
+        )
+
+        self.daily_load_mlp = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.ReLU(),
+            nn.Linear(dim, dim),
+        )
+
+        self.d_mlp = nn.Sequential(
+            nn.Linear(8, dim),
+            nn.ReLU(),
+            nn.Linear(dim, dim),
+        )
+
+        self.weekly_load_mlp = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.ReLU(),
+            nn.Linear(dim, dim),
+        )
+
+        self.hist_fusion_mlp = nn.Sequential(
+            nn.Linear(dim * 3, dim),
             nn.ReLU(),
             nn.Linear(dim, dim),
         )
@@ -124,12 +170,12 @@ class MultiModalFusion(nn.Module):
         ])
 
         self.output_fc = nn.Sequential(
-            nn.Linear(dim, dim),
+            nn.Linear(dim * 2, dim),
             nn.ReLU(),
             nn.Linear(dim, pred_len),
         )
 
-    def forward(self, weather, past, time, year, month, day, hour, ind, lam, Modal=None):
+    def forward(self, weather, past, daily, weekly, time, year, month, day, hour, ind, lam, Modal=None):
         timestamps = [
             datetime(
                 int(year[i]), int(month[i]), int(day[i]), int(hour[i])
@@ -175,8 +221,11 @@ class MultiModalFusion(nn.Module):
 
         numerical_weather = self.numerical_weather_fc(weather)
 
-        tcn_out = self.tcn_load(past.unsqueeze(1)).mean(dim=2)
-        past_load = self.past_load_mlp(tcn_out)
+        L_d = self.d_mlp(daily)
+        past_feat = self.past_load_mlp(self.tcn_past(past.unsqueeze(1)).mean(dim=2))
+        daily_feat = self.daily_load_mlp(self.tcn_daily(daily.unsqueeze(1)).mean(dim=2))
+        weekly_feat = self.weekly_load_mlp(self.tcn_weekly(weekly.unsqueeze(1)).mean(dim=2))
+        hist_feat = self.hist_fusion_mlp(torch.cat([past_feat, daily_feat, weekly_feat], dim=1))
 
         time = self.time_fc(time)
 
@@ -184,12 +233,14 @@ class MultiModalFusion(nn.Module):
         for g in self.gmf_weather:
             k_t = g(k_t, numerical_weather)
 
-        L_t = past_load
+        L_t = hist_feat
         for g in self.gmf_load:
             L_t = g(L_t, time)
 
         fusion = L_t
         for g in self.gmf_final:
             fusion = g(fusion, k_t)
+
+        fusion = torch.cat([fusion, L_d], dim=1)
 
         return self.output_fc(fusion)
