@@ -47,6 +47,7 @@ class MultiModalFusion(nn.Module):
 
         weather_in_dim = weather_feat_dim * pred_len
         time_in_dim = time_feat_dim * pred_len
+        daily_in_dim = daily_len * pred_len
 
         self.image_backbone = image_backbone.lower()
         self.image_fc = nn.Linear(dim, dim)
@@ -110,14 +111,14 @@ class MultiModalFusion(nn.Module):
         )
 
         self.tcn_daily = nn.Sequential(
-            nn.Conv1d(1, dim, 3, padding=1),
+            nn.Conv1d(daily_len, dim, 3, padding=1),
             nn.ReLU(),
             nn.Conv1d(dim, dim, 3, padding=1),
             nn.ReLU(),
         )
 
         self.tcn_weekly = nn.Sequential(
-            nn.Conv1d(1, dim, 2, padding=1),
+            nn.Conv1d(weekly_len, dim, 2, padding=1),
             nn.ReLU(),
             nn.Conv1d(dim, dim, 2, padding=1),
             nn.ReLU(),
@@ -136,7 +137,7 @@ class MultiModalFusion(nn.Module):
         )
 
         self.d_mlp = nn.Sequential(
-            nn.Linear(8, dim),
+            nn.Linear(daily_in_dim, dim),
             nn.ReLU(),
             nn.Linear(dim, dim),
         )
@@ -176,11 +177,15 @@ class MultiModalFusion(nn.Module):
         )
 
     def forward(self, weather, past, daily, weekly, time, year, month, day, hour, ind, lam, Modal=None):
+        batch_size = year.size(0)
         timestamps = [
             datetime(
-                int(year[i]), int(month[i]), int(day[i]), int(hour[i])
+                int(year[i].item()),
+                int(month[i].item()),
+                int(day[i].item()),
+                int(hour[i].item()),
             )
-            for i in range(len(year))
+            for i in range(batch_size)
         ]
 
         seq = []
@@ -219,14 +224,23 @@ class MultiModalFusion(nn.Module):
             x = self.vit_frame(x).view(B, L, self.dim)
             image_out = self.image_fc(x.mean(dim=1))
 
+        weather = weather.reshape(weather.size(0), -1)
         numerical_weather = self.numerical_weather_fc(weather)
 
-        L_d = self.d_mlp(daily)
         past_feat = self.past_load_mlp(self.tcn_past(past.unsqueeze(1)).mean(dim=2))
-        daily_feat = self.daily_load_mlp(self.tcn_daily(daily.unsqueeze(1)).mean(dim=2))
-        weekly_feat = self.weekly_load_mlp(self.tcn_weekly(weekly.unsqueeze(1)).mean(dim=2))
+
+        daily_tcn_in = daily.transpose(1, 2).contiguous()
+        weekly_tcn_in = weekly.transpose(1, 2).contiguous()
+
+        daily_feat = self.daily_load_mlp(self.tcn_daily(daily_tcn_in).mean(dim=2))
+        weekly_feat = self.weekly_load_mlp(self.tcn_weekly(weekly_tcn_in).mean(dim=2))
+
+        daily = daily.reshape(daily.size(0), -1)
+        L_d = self.d_mlp(daily)
+
         hist_feat = self.hist_fusion_mlp(torch.cat([past_feat, daily_feat, weekly_feat], dim=1))
 
+        time = time.reshape(time.size(0), -1)
         time = self.time_fc(time)
 
         k_t = image_out
