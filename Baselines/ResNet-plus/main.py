@@ -90,7 +90,7 @@ class TrainConfig:
     save_root: str
 
     his_len: int = 6
-    pre_len: int = 3
+    pre_len: int = 1
 
     add_weather_noise: bool = True
     noise_seed: int = 42
@@ -123,10 +123,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=list(DATASET_TABLE.keys()),
     )
     p.add_argument("--data_root", type=str, default=r"D:\python project\image extreme weather\data")
-    p.add_argument("--save_root", type=str, default=r"D:\python project\image extreme weather\resnetplus_torch_v2_results")
+    p.add_argument("--save_root", type=str, default="results")
 
     p.add_argument("--his_len", type=int, default=6)
-    p.add_argument("--pre_len", type=int, default=3)
+    p.add_argument("--pre_len", type=int, default=1)
 
     p.add_argument("--add_weather_noise", action="store_true", default=True)
     p.add_argument("--no_weather_noise", dest="add_weather_noise", action="store_false")
@@ -143,7 +143,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--epochs", type=int, default=300)
+    p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--early_stopping_patience", type=int, default=30)
 
     p.add_argument("--random_state", type=int, default=42)
@@ -260,8 +260,8 @@ def build_samples_from_file(
 
     for i in range(his_length, n - pre_length + 1):
         x_past = load_norm[i - his_length:i]
-        x_daily = daily[i]
-        x_weekly = weekly[i]
+        x_daily = daily[i:i + pre_length]
+        x_weekly = weekly[i:i + pre_length]
 
         if add_weather_noise:
             w = weather_raw[i:i + pre_length].copy()
@@ -321,8 +321,8 @@ def build_samples_from_file(
         "daily_cols": daily_cols,
         "weekly_cols": weekly_cols,
         "past_dim": int(X_past.shape[1]),
-        "daily_dim": int(X_daily.shape[1]),
-        "weekly_dim": int(X_weekly.shape[1]),
+        "daily_dim": int(X_daily.shape[2]),
+        "weekly_dim": int(X_weekly.shape[2]),
         "weather_dim": int(X_weather.shape[2]),
         "time_dim": int(X_time.shape[2]),
         "pre_len": int(pre_length),
@@ -370,13 +370,12 @@ class RecentBranch(nn.Module):
         return x
 
 
-class HorizonBasicStructureV2(nn.Module):
-    def __init__(self, past_dim, daily_dim, weekly_dim, weather_dim, time_dim, hidden_dim):
+class HorizonSubNetwork(nn.Module):
+    def __init__(self, hidden_dim, daily_dim, weekly_dim, weather_dim, time_dim):
         super().__init__()
-        self.past_dim = past_dim
         self.hidden_dim = hidden_dim
 
-        self.past_branch = RecentBranch(hidden_dim)
+        self.recent_branch = RecentBranch(hidden_dim)
         self.daily_branch = TwoLayerBranch(daily_dim, hidden_dim)
         self.weekly_branch = TwoLayerBranch(weekly_dim, hidden_dim)
         self.weather_branch = TwoLayerBranch(weather_dim, hidden_dim)
@@ -395,15 +394,15 @@ class HorizonBasicStructureV2(nn.Module):
         self.fc_out2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc_pred = nn.Linear(hidden_dim, 1)
 
-    def forward(self, past, daily, weekly, weather_h, time_h, prev_outputs):
+    def forward(self, past, daily_h, weekly_h, weather_h, time_h, prev_outputs):
         if prev_outputs is None or prev_outputs.shape[1] == 0:
-            recent = past
+            recent_input = past
         else:
-            recent = torch.cat([past, prev_outputs], dim=1)
+            recent_input = torch.cat([past, prev_outputs], dim=1)
 
-        h_past = self.past_branch(recent)
-        h_daily = self.daily_branch(daily)
-        h_weekly = self.weekly_branch(weekly)
+        h_recent = self.recent_branch(recent_input)
+        h_daily = self.daily_branch(daily_h)
+        h_weekly = self.weekly_branch(weekly_h)
         h_weather = self.weather_branch(weather_h)
         h_time = self.time_branch(time_h)
 
@@ -413,11 +412,11 @@ class HorizonBasicStructureV2(nn.Module):
         h_wt = F.selu(self.fc_wt1(torch.cat([h_weekly, h_time], dim=1)))
         h_wt = F.selu(self.fc_wt2(h_wt))
 
-        h_global = F.selu(self.fc_global1(torch.cat([h_dw, h_wt, h_past], dim=1)))
+        h_global = F.selu(self.fc_global1(torch.cat([h_dw, h_wt, h_recent], dim=1)))
         h_global = F.selu(self.fc_global2(h_global))
 
         aux_scalar = weather_h[:, :1]
-        h = F.selu(self.fc_out1(torch.cat([h_global, h_past, aux_scalar], dim=1)))
+        h = F.selu(self.fc_out1(torch.cat([h_global, h_recent, aux_scalar], dim=1)))
         h = F.selu(self.fc_out2(h))
         out = self.fc_pred(h)
         return out
@@ -433,11 +432,24 @@ class ResidualVectorBlock(nn.Module):
         return x + self.fc2(F.selu(self.fc1(x)))
 
 
-class ResNetPlusTorchV2(nn.Module):
+class ResidualRefiner(nn.Module):
+    def __init__(self, vec_dim, hidden_dim, num_blocks):
+        super().__init__()
+        self.blocks = nn.ModuleList([
+            ResidualVectorBlock(vec_dim, hidden_dim) for _ in range(num_blocks)
+        ])
+
+    def forward(self, coarse):
+        x = coarse
+        for blk in self.blocks:
+            x = blk(x)
+        return x
+
+
+class HorizonSpecificResNetPlus(nn.Module):
     def __init__(
         self,
         pre_len,
-        past_dim,
         daily_dim,
         weekly_dim,
         weather_dim,
@@ -447,41 +459,42 @@ class ResNetPlusTorchV2(nn.Module):
     ):
         super().__init__()
         self.pre_len = pre_len
-        self.horizon_blocks = nn.ModuleList([
-            HorizonBasicStructureV2(
-                past_dim=past_dim,
+
+        self.horizon_nets = nn.ModuleList([
+            HorizonSubNetwork(
+                hidden_dim=hidden_dim,
                 daily_dim=daily_dim,
                 weekly_dim=weekly_dim,
                 weather_dim=weather_dim,
                 time_dim=time_dim,
-                hidden_dim=hidden_dim,
             )
             for _ in range(pre_len)
         ])
-        self.res_blocks = nn.ModuleList([
-            ResidualVectorBlock(pre_len, hidden_dim)
-            for _ in range(num_res_blocks)
-        ])
+
+        self.refiner = ResidualRefiner(
+            vec_dim=pre_len,
+            hidden_dim=hidden_dim,
+            num_blocks=num_res_blocks,
+        )
 
     def forward(self, past, daily, weekly, weather, time_feat):
         outputs = []
-        prev = None
+        prev_outputs = None
+
         for h in range(self.pre_len):
-            out_h = self.horizon_blocks[h](
+            out_h = self.horizon_nets[h](
                 past=past,
-                daily=daily,
-                weekly=weekly,
+                daily_h=daily[:, h, :],
+                weekly_h=weekly[:, h, :],
                 weather_h=weather[:, h, :],
                 time_h=time_feat[:, h, :],
-                prev_outputs=prev,
+                prev_outputs=prev_outputs,
             )
             outputs.append(out_h)
-            prev = torch.cat(outputs, dim=1)
+            prev_outputs = torch.cat(outputs, dim=1)
 
         coarse = torch.cat(outputs, dim=1)
-        refined = coarse
-        for blk in self.res_blocks:
-            refined = blk(refined)
+        refined = self.refiner(coarse)
         return refined
 
 
@@ -562,7 +575,6 @@ def train_model(model, train_loader, val_loader, cfg: TrainConfig, device):
             optimizer.step()
 
         val_loss, _, _ = evaluate_model(model, val_loader, device)
-
         scheduler.step(val_loss)
 
         if val_loss < best_val:
@@ -574,6 +586,9 @@ def train_model(model, train_loader, val_loader, cfg: TrainConfig, device):
             wait += 1
             if wait >= cfg.early_stopping_patience:
                 break
+
+    if best_state is None:
+        raise RuntimeError("Training failed: no best model state was saved.")
 
     model.load_state_dict(best_state)
     return model, best_val, best_epoch
@@ -647,9 +662,8 @@ def run_one_dataset(ds_cfg: DatasetConfig, cfg: TrainConfig):
     val_loader = make_loader(features, targets, val_mask, cfg.batch_size, False)
     test_loader = make_loader(features, targets, test_mask, cfg.batch_size, False)
 
-    model = ResNetPlusTorchV2(
+    model = HorizonSpecificResNetPlus(
         pre_len=cfg.pre_len,
-        past_dim=meta["past_dim"],
         daily_dim=meta["daily_dim"],
         weekly_dim=meta["weekly_dim"],
         weather_dim=meta["weather_dim"],
