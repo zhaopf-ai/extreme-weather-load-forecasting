@@ -127,7 +127,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=list(DATASET_TABLE.keys()),
     )
     p.add_argument("--data_root", type=str, default=r"D:\python project\image extreme weather\data")
-    p.add_argument("--save_root", type=str, default=r"D:\python project\image extreme weather\gpatl_results")
+    p.add_argument("--save_root", type=str, default="results")
 
     p.add_argument("--his_len", type=int, default=6)
     p.add_argument("--pre_len", type=int, default=1)
@@ -145,7 +145,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--hidden_dim", type=int, default=20)
     p.add_argument("--num_res_blocks", type=int, default=3)
     p.add_argument("--nn_lr", type=float, default=1e-3)
-    p.add_argument("--nn_epochs", type=int, default=100)
+    p.add_argument("--nn_epochs", type=int, default=20)
     p.add_argument("--batch_size", type=int, default=128)
 
     p.add_argument("--gp_lengthscale", type=float, default=0.1)
@@ -339,32 +339,39 @@ def build_samples_from_file(
 
     for i in range(his_length, n - pre_length + 1):
         x_past = load_norm[i - his_length:i]
-        x_daily = daily[i]
-        x_weekly = weekly[i]
 
-        if add_weather_noise:
-            w = weather_raw[i:i + pre_length].copy()
-            for k in range(pre_length):
-                lead = k + 1
-                w[k, 0] += rng.normal(0, _interp_sigma(lead, 0.5, 2.0))
-                w[k, 1] += rng.normal(0, _interp_sigma(lead, 1.0, 2.0) * 3.6)
-                w[k, 3] += rng.normal(0, _interp_sigma(lead, 5.0, 12.0))
-                w[k, 2] *= 1.0 + rng.normal(0, precip_cv_1to9[min(lead, 9) - 1])
+        sample_x = []
+        sample_y = []
 
-            w[:, 1] = np.clip(w[:, 1], 0, None)
-            w[:, 2] = np.clip(w[:, 2], 0, None)
-            w[:, 3] = np.clip(w[:, 3], 0, 100)
-            x_weather = (w / weather_max).reshape(-1)
-        else:
-            x_weather = weather[i:i + pre_length].reshape(-1)
+        for h in range(pre_length):
+            idx = i + h
+            lead = h + 1
 
-        x_time = time[i:i + pre_length].reshape(-1)
-        y = load_norm[i:i + pre_length]
+            x_daily = daily[idx]
+            x_weekly = weekly[idx]
 
-        x = np.concatenate([x_past, x_daily, x_weekly, x_weather, x_time], axis=0)
+            if add_weather_noise:
+                w = weather_raw[idx].copy()
+                w[0] += rng.normal(0, _interp_sigma(lead, 0.5, 2.0))
+                w[1] += rng.normal(0, _interp_sigma(lead, 1.0, 2.0) * 3.6)
+                w[3] += rng.normal(0, _interp_sigma(lead, 5.0, 12.0))
+                w[2] *= 1.0 + rng.normal(0, precip_cv_1to9[min(lead, 9) - 1])
+                w[1] = np.clip(w[1], 0, None)
+                w[2] = np.clip(w[2], 0, None)
+                w[3] = np.clip(w[3], 0, 100)
+                x_weather = w / weather_max
+            else:
+                x_weather = weather[idx]
 
-        feats.append(x)
-        targets.append(y)
+            x_time = time[idx]
+            y_h = load_norm[idx]
+
+            x_h = np.concatenate([x_past, x_daily, x_weekly, x_weather, x_time], axis=0)
+            sample_x.append(x_h)
+            sample_y.append(y_h)
+
+        feats.append(np.stack(sample_x, axis=0))
+        targets.append(np.asarray(sample_y, dtype=np.float32))
         ts_start.append(row_ts.iloc[i])
 
     X = np.asarray(feats, dtype=np.float32)
@@ -393,12 +400,12 @@ def build_samples_from_file(
         "time_cols": time_cols,
         "daily_cols": daily_cols,
         "weekly_cols": weekly_cols,
-        "feature_dim": int(X.shape[1]),
-        "time_feat_dim": int(len(time_cols)),
-        "weather_feat_dim": int(len(weather_cols) * pre_length),
+        "feature_dim": int(X.shape[2]),
         "past_feat_dim": int(his_length),
         "daily_feat_dim": int(len(daily_cols)),
         "weekly_feat_dim": int(len(weekly_cols)),
+        "weather_feat_dim": int(len(weather_cols)),
+        "time_feat_dim": int(len(time_cols)),
     }
 
     return X, y, split, meta
@@ -589,9 +596,6 @@ def run_one_dataset(ds_cfg: DatasetConfig, cfg: TrainConfig):
             f"Empty split detected: train={len(X_train)}, val={len(X_val)}, test={len(X_test)}"
         )
 
-    X_gp = np.concatenate([X_train, X_val], axis=0)
-    y_gp = np.concatenate([y_train, y_val], axis=0)
-
     print(f"Feature dim: {meta['feature_dim']}")
     print(f"Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
     print(f"Train range: <= {cfg.train_end_date}")
@@ -603,27 +607,36 @@ def run_one_dataset(ds_cfg: DatasetConfig, cfg: TrainConfig):
     best_val_mapes = []
 
     for h in range(cfg.pre_len):
+        X_train_h = X_train[:, h, :]
+        y_train_h = y_train[:, h]
+        X_val_h = X_val[:, h, :]
+        y_val_h = y_val[:, h]
+        X_test_h = X_test[:, h, :]
+
+        X_gp_h = np.concatenate([X_train_h, X_val_h], axis=0)
+        y_gp_h = np.concatenate([y_train_h, y_val_h], axis=0)
+
         backbone = ResMLP(
-            in_dim=X.shape[1],
+            in_dim=X.shape[2],
             hidden_dim=cfg.hidden_dim,
             num_res_blocks=cfg.num_res_blocks,
         ).to(device)
 
         backbone, best_val = train_backbone(
             model=backbone,
-            X_train=X_train,
-            y_train=y_train[:, h],
-            X_val=X_val,
-            y_val=y_val[:, h],
+            X_train=X_train_h,
+            y_train=y_train_h,
+            X_val=X_val_h,
+            y_val=y_val_h,
             cfg=cfg,
             device=device,
         )
 
         pred_h, var_h = fit_gp_residual(
             backbone=backbone,
-            X_gp=X_gp,
-            y_gp=y_gp[:, h],
-            X_test=X_test,
+            X_gp=X_gp_h,
+            y_gp=y_gp_h,
+            X_test=X_test_h,
             cfg=cfg,
             device=device,
         )
