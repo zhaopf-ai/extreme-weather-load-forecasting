@@ -179,11 +179,6 @@ def build_samples_from_file(
 ):
     data = _read_tabular(file_path)
 
-    year = data["year"].values.astype(np.int32)
-    month = data["month"].values.astype(np.int32)
-    day = data["day"].values.astype(np.int32)
-    hour = data["hour"].values.astype(np.int32)
-
     row_ts = pd.to_datetime(data[["year", "month", "day", "hour"]])
 
     train_end_ts = pd.Timestamp(train_end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
@@ -243,14 +238,19 @@ def build_samples_from_file(
     if n < his_length + pre_length:
         raise ValueError("Insufficient data length.")
 
-    feats = []
-    targets = []
+    X_past = []
+    X_lag = []
+    X_weather = []
+    X_time = []
+    Y = []
     ts_start = []
 
     for i in range(his_length, n - pre_length + 1):
         x_past = load_norm[i - his_length:i]
-        x_daily = daily[i]
-        x_weekly = weekly[i]
+
+        x_daily = daily[i:i + pre_length]
+        x_weekly = weekly[i:i + pre_length]
+        x_lag = np.concatenate([x_daily, x_weekly], axis=1)
 
         if add_weather_noise:
             w = weather_raw[i:i + pre_length].copy()
@@ -264,21 +264,25 @@ def build_samples_from_file(
             w[:, 1] = np.clip(w[:, 1], 0, None)
             w[:, 2] = np.clip(w[:, 2], 0, None)
             w[:, 3] = np.clip(w[:, 3], 0, 100)
-            x_weather = (w / weather_max).reshape(-1)
+            x_weather = w / weather_max
         else:
-            x_weather = weather[i:i + pre_length].reshape(-1)
+            x_weather = weather[i:i + pre_length]
 
-        x_time = time[i:i + pre_length].reshape(-1)
+        x_time = time[i:i + pre_length]
         y = load_norm[i:i + pre_length]
 
-        x = np.concatenate([x_past, x_daily, x_weekly, x_weather, x_time], axis=0)
-
-        feats.append(x)
-        targets.append(y)
+        X_past.append(x_past.astype(np.float32))
+        X_lag.append(x_lag.astype(np.float32))
+        X_weather.append(x_weather.astype(np.float32))
+        X_time.append(x_time.astype(np.float32))
+        Y.append(y.astype(np.float32))
         ts_start.append(row_ts.iloc[i])
 
-    X = np.asarray(feats, dtype=np.float32)
-    y = np.asarray(targets, dtype=np.float32)
+    X_past = np.asarray(X_past, dtype=np.float32)
+    X_lag = np.asarray(X_lag, dtype=np.float32)
+    X_weather = np.asarray(X_weather, dtype=np.float32)
+    X_time = np.asarray(X_time, dtype=np.float32)
+    Y = np.asarray(Y, dtype=np.float32)
 
     ts_start = pd.to_datetime(ts_start)
     ts_end = ts_start + pd.to_timedelta(pre_length - 1, unit="h")
@@ -303,15 +307,14 @@ def build_samples_from_file(
         "time_cols": time_cols,
         "daily_cols": daily_cols,
         "weekly_cols": weekly_cols,
-        "feature_dim": int(X.shape[1]),
-        "time_feat_dim": int(len(time_cols)),
-        "weather_feat_dim": int(len(weather_cols) * pre_length),
-        "past_feat_dim": int(his_length),
-        "daily_feat_dim": int(len(daily_cols)),
-        "weekly_feat_dim": int(len(weekly_cols)),
+        "past_feat_dim": int(X_past.shape[1]),
+        "lag_feat_dim": int(X_lag.shape[2]),
+        "weather_feat_dim": int(X_weather.shape[2]),
+        "time_feat_dim": int(X_time.shape[2]),
+        "feature_dim_per_horizon": int(X_past.shape[1] + X_lag.shape[2] + X_weather.shape[2] + X_time.shape[2]),
     }
 
-    return X, y, split, meta
+    return X_past, X_lag, X_weather, X_time, Y, split, meta
 
 
 def evaluate_multistep(y_true_norm: np.ndarray, y_pred_norm: np.ndarray, scaler_y: float):
@@ -353,7 +356,7 @@ def run_one_dataset(ds_cfg: DatasetConfig, cfg: TrainConfig):
 
     t0 = time.time()
 
-    X, y, split, meta = build_samples_from_file(
+    X_past, X_lag, X_weather, X_time, y, split, meta = build_samples_from_file(
         file_path=str(data_path),
         his_length=cfg.his_len,
         pre_length=cfg.pre_len,
@@ -370,20 +373,29 @@ def run_one_dataset(ds_cfg: DatasetConfig, cfg: TrainConfig):
     val_mask = split["val_mask"]
     test_mask = split["test_mask"]
 
-    X_train, y_train = X[train_mask], y[train_mask]
-    X_val, y_val = X[val_mask], y[val_mask]
-    X_test, y_test = X[test_mask], y[test_mask]
+    X_past_train, X_lag_train, X_weather_train, X_time_train, y_train = (
+        X_past[train_mask], X_lag[train_mask], X_weather[train_mask], X_time[train_mask], y[train_mask]
+    )
+    X_past_val, X_lag_val, X_weather_val, X_time_val, y_val = (
+        X_past[val_mask], X_lag[val_mask], X_weather[val_mask], X_time[val_mask], y[val_mask]
+    )
+    X_past_test, X_lag_test, X_weather_test, X_time_test, y_test = (
+        X_past[test_mask], X_lag[test_mask], X_weather[test_mask], X_time[test_mask], y[test_mask]
+    )
 
-    if len(X_train) == 0 or len(X_val) == 0 or len(X_test) == 0:
+    if len(X_past_train) == 0 or len(X_past_val) == 0 or len(X_past_test) == 0:
         raise ValueError(
-            f"Empty split detected: train={len(X_train)}, val={len(X_val)}, test={len(X_test)}"
+            f"Empty split detected: train={len(X_past_train)}, val={len(X_past_val)}, test={len(X_past_test)}"
         )
 
-    X_trv = np.concatenate([X_train, X_val], axis=0)
+    X_past_trv = np.concatenate([X_past_train, X_past_val], axis=0)
+    X_lag_trv = np.concatenate([X_lag_train, X_lag_val], axis=0)
+    X_weather_trv = np.concatenate([X_weather_train, X_weather_val], axis=0)
+    X_time_trv = np.concatenate([X_time_train, X_time_val], axis=0)
     y_trv = np.concatenate([y_train, y_val], axis=0)
 
-    print(f"Feature dim: {meta['feature_dim']}")
-    print(f"Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
+    print(f"Feature dim per horizon: {meta['feature_dim_per_horizon']}")
+    print(f"Train: {len(X_past_train)} | Val: {len(X_past_val)} | Test: {len(X_past_test)}")
     print(f"Train range: <= {cfg.train_end_date}")
     print(f"Val range  : {cfg.val_start_date} to {cfg.val_end_date}")
     print(f"Test range : {cfg.test_start_date} to {cfg.test_end_date}")
@@ -392,12 +404,32 @@ def run_one_dataset(ds_cfg: DatasetConfig, cfg: TrainConfig):
     models = []
 
     for h in range(cfg.pre_len):
+        Xh_trv = np.concatenate(
+            [
+                X_past_trv,
+                X_lag_trv[:, h, :],
+                X_weather_trv[:, h, :],
+                X_time_trv[:, h, :],
+            ],
+            axis=1,
+        )
+        Xh_test = np.concatenate(
+            [
+                X_past_test,
+                X_lag_test[:, h, :],
+                X_weather_test[:, h, :],
+                X_time_test[:, h, :],
+            ],
+            axis=1,
+        )
+
         model = build_gam_model(cfg)
-        model.fit(X_trv, y_trv[:, h])
-        pred_h = model.predict(X_test).reshape(-1, 1)
+        model.fit(Xh_trv, y_trv[:, h])
+        pred_h = model.predict(Xh_test).reshape(-1, 1)
+
         preds_test.append(pred_h)
         models.append(model)
-        print(f"Horizon {h + 1}: finished")
+        print(f"Horizon {h + 1}: finished, input shape = {Xh_trv.shape}")
 
     y_pred_test = np.concatenate(preds_test, axis=1)
 
@@ -428,9 +460,9 @@ def run_one_dataset(ds_cfg: DatasetConfig, cfg: TrainConfig):
         "dataset": ds_cfg.name,
         "config": asdict(cfg),
         "meta": meta,
-        "num_train": int(len(X_train)),
-        "num_val": int(len(X_val)),
-        "num_test": int(len(X_test)),
+        "num_train": int(len(X_past_train)),
+        "num_val": int(len(X_past_val)),
+        "num_test": int(len(X_past_test)),
         "overall_metrics": overall_metrics,
         "per_horizon_metrics": per_horizon_metrics,
         "elapsed_seconds": float(time.time() - t0),
