@@ -1,2 +1,4 @@
-The image data can be downloaded from:
-`https://zenodo.org/records/17863145`
+<small>
+The image data can be downloaded from 
+<code>https://zenodo.org/records/17863145</code>
+</small>
