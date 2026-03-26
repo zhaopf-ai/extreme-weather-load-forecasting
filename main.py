@@ -34,11 +34,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Which datasets to run",
     )
     p.add_argument("--data_root", type=str, default="D:\\python project\\image extreme weather\\data")
-    p.add_argument("--exp_root", type=str, default="D:\\python project\\image_extreme_weather_v2\\results")
+    p.add_argument("--exp_root", type=str, default="results")
 
     p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--his_len", type=int, default=6)
-    p.add_argument("--pre_len", type=int, default=1)
+    p.add_argument("--his_len", type=int, default=24)
+    p.add_argument("--pre_len", type=int, default=9)
     p.add_argument("--add_weather_noise", action="store_true", default=True)
     p.add_argument("--no_weather_noise", dest="add_weather_noise", action="store_false")
     p.add_argument("--noise_seed", type=int, default=42)
@@ -62,7 +62,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--vit_depth", type=int, default=5)
     p.add_argument("--vit_heads", type=int, default=4)
 
-    p.add_argument("--epochs", type=int, default=500)
+    p.add_argument("--epochs", type=int, default=5)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--scheduler_factor", type=float, default=0.5)
     p.add_argument("--scheduler_patience", type=int, default=10)
@@ -192,6 +192,8 @@ def build_model(
     weather_loader: WeatherImageLoader,
     args: argparse.Namespace,
     time_feat_dim: int,
+    daily_feat_dim: int,
+    weekly_feat_dim: int,
 ) -> nn.Module:
     model = MultiModalFusion(
         weather_loader=weather_loader,
@@ -201,6 +203,8 @@ def build_model(
         past_len=args.his_len,
         pred_len=args.pre_len,
         time_feat_dim=time_feat_dim,
+        daily_len=daily_feat_dim,
+        weekly_len=weekly_feat_dim,
         image_backbone=args.image_backbone,
         vit_depth=args.vit_depth,
         vit_heads=args.vit_heads,
@@ -212,6 +216,8 @@ def build_online_model(
     weather_loader: WeatherImageLoader,
     args: argparse.Namespace,
     time_feat_dim: int,
+    daily_feat_dim: int,
+    weekly_feat_dim: int,
 ) -> nn.Module:
     model = MultiModalFusion(
         weather_loader=weather_loader,
@@ -222,6 +228,8 @@ def build_online_model(
         pred_len=args.pre_len,
         time_feat_dim=time_feat_dim,
         weather_feat_dim=4,
+        daily_len=daily_feat_dim,
+        weekly_len=weekly_feat_dim,
         image_backbone=args.image_backbone,
         vit_depth=args.vit_depth,
         vit_heads=args.vit_heads,
@@ -259,7 +267,16 @@ def run_one_dataset(cfg: DatasetConfig, args: argparse.Namespace) -> None:
 
     weather_loader = WeatherImageLoader(str(img_dir), str(processed_dir))
 
-    train_loader, val_loader, online_val_loader, test_loader, scaler_y, time_feat_dim = load_data(
+    (
+        train_loader,
+        val_loader,
+        online_val_loader,
+        test_loader,
+        scaler_y,
+        time_feat_dim,
+        daily_feat_dim,
+        weekly_feat_dim,
+    ) = load_data(
         str(data_path),
         batch_size=args.batch_size,
         his_length=args.his_len,
@@ -275,7 +292,13 @@ def run_one_dataset(cfg: DatasetConfig, args: argparse.Namespace) -> None:
         test_end_date=args.test_end_date,
     )
 
-    model = build_model(weather_loader, args, time_feat_dim)
+    model = build_model(
+        weather_loader=weather_loader,
+        args=args,
+        time_feat_dim=time_feat_dim,
+        daily_feat_dim=daily_feat_dim,
+        weekly_feat_dim=weekly_feat_dim,
+    )
 
     total_params, trainable_params = count_params(model)
     print(f"Total params: {total_params:,}")
@@ -307,7 +330,13 @@ def run_one_dataset(cfg: DatasetConfig, args: argparse.Namespace) -> None:
     )
     trainer.train()
 
-    base_model_online_val = build_online_model(weather_loader, args, time_feat_dim)
+    base_model_online_val = build_online_model(
+        weather_loader=weather_loader,
+        args=args,
+        time_feat_dim=time_feat_dim,
+        daily_feat_dim=daily_feat_dim,
+        weekly_feat_dim=weekly_feat_dim,
+    )
     base_model_online_val.load_state_dict(torch.load(model_path, map_location=device))
 
     online_val_eval_loader = DataLoader(online_val_loader.dataset, batch_size=1, shuffle=False)
@@ -318,7 +347,13 @@ def run_one_dataset(cfg: DatasetConfig, args: argparse.Namespace) -> None:
     )
     evaluate_and_print("Online-Val", online_val_predictions_arr, online_val_actuals_arr, scaler_y)
 
-    base_model_test = build_online_model(weather_loader, args, time_feat_dim)
+    base_model_test = build_online_model(
+        weather_loader=weather_loader,
+        args=args,
+        time_feat_dim=time_feat_dim,
+        daily_feat_dim=daily_feat_dim,
+        weekly_feat_dim=weekly_feat_dim,
+    )
     base_model_test.load_state_dict(torch.load(model_path, map_location=device))
 
     online_test_loader = DataLoader(test_loader.dataset, batch_size=1, shuffle=False)
