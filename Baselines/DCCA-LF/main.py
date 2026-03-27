@@ -248,7 +248,7 @@ def run_one_dataset(cfg: DatasetConfig, args: argparse.Namespace):
     print(f"Total params: {total_params:,}")
     print(f"Trainable params: {trainable_params:,}")
 
-    criterion = nn.L1Loss()
+    criterion = nn.MSELoss()
     optimizer = optim.Adam(
         model.parameters(),
         lr=args.lr,
