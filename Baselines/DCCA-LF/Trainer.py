@@ -13,13 +13,6 @@ def _sync_cuda():
 
 
 def _parse_model_output(outputs):
-    """
-    Supports:
-        1) pred
-        2) (pred, extra_dict)
-    Returns:
-        pred, extra_dict
-    """
     if isinstance(outputs, tuple):
         if len(outputs) != 2:
             raise ValueError("Model output tuple must be (pred, extra_dict).")
@@ -31,12 +24,6 @@ def _parse_model_output(outputs):
 
 
 def _get_aux_loss(extra, device_):
-    """
-    Priority:
-        1) extra['total_aux_loss']
-        2) extra['dcca_loss']
-        3) 0
-    """
     if not isinstance(extra, dict):
         return torch.tensor(0.0, device=device_)
 
@@ -101,7 +88,7 @@ class Trainer:
         batch_size = weather.size(0)
         ind = torch.arange(batch_size, device=device)
         lam = torch.ones(batch_size, 1, 1, 1, device=device)
-        return self.model(weather, past, daily, weekly, time, year, month, day, hour, ind, lam, Modal=0)
+        return self.model(weather, past, daily, weekly, time, year, month, day, hour, ind, lam, Modal=0, return_extra=True)
 
     def train(self):
         best_val_loss = float("inf")
