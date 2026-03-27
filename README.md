@@ -53,6 +53,6 @@ Open `main.py` and run it directly.
 ### 2: Run via command line
 
 ```bash
-python main.py --datasets Gympie \
+example: python main.py --datasets Gympie \
 
 
