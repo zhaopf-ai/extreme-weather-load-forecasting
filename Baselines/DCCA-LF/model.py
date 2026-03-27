@@ -127,10 +127,6 @@ class RICNN(nn.Module):
         self.fc = nn.Linear(conv_channels * pooled_size * pooled_size, out_dim)
 
     def _crop_roi(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, C, H, W]
-        If roi_center is None, crop from center.
-        """
         b, c, h, w = x.shape
         rs = min(self.roi_size, h, w)
 
@@ -153,9 +149,6 @@ class RICNN(nn.Module):
         return roi
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, C, H, W]
-        """
         roi = self._crop_roi(x)
         roi = self.avg_pool(roi)
         feat = self.conv(roi)
@@ -194,9 +187,6 @@ class ImageEncoderConvLSTM_RICNN(nn.Module):
         )
 
     def forward(self, image_seq: torch.Tensor) -> torch.Tensor:
-        """
-        image_seq: [B, T, C, H, W]
-        """
         _, (h_last, _) = self.convlstm(image_seq)
         z_img = self.ricnn(h_last)
         return z_img
@@ -218,12 +208,9 @@ class LoadGRUEncoder(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, L] or [B, L, 1]
-        """
         if x.dim() == 2:
             x = x.unsqueeze(-1)
-        out, h = self.gru(x)
+        _, h = self.gru(x)
         feat = h[-1]
         feat = self.fc(feat)
         return feat
@@ -245,35 +232,56 @@ class MLPEncoder(nn.Module):
         return self.net(x)
 
 
-class TabularFusion(nn.Module):
-    def __init__(self, hist_dim: int, aux_dim: int, out_dim: int):
+class HorizonWiseAuxEncoder(nn.Module):
+    def __init__(self, step_input_dim: int, hidden_dim: int = 64, out_dim: int = 64, dropout: float = 0.0):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(hist_dim + aux_dim, out_dim),
-            nn.ReLU(),
-            nn.Linear(out_dim, out_dim),
+        self.step_mlp = MLPEncoder(
+            input_dim=step_input_dim,
+            hidden_dim=hidden_dim,
+            out_dim=out_dim,
+            dropout=dropout,
         )
 
-    def forward(self, z_hist: torch.Tensor, z_aux: torch.Tensor) -> torch.Tensor:
-        return self.net(torch.cat([z_hist, z_aux], dim=-1))
+    def forward(
+        self,
+        daily: torch.Tensor,
+        weekly: torch.Tensor,
+        weather: torch.Tensor,
+        time: torch.Tensor,
+    ) -> torch.Tensor:
+        x = torch.cat([daily, weekly, weather, time], dim=-1)
+        b, h, d = x.shape
+        z = self.step_mlp(x.reshape(b * h, d)).reshape(b, h, -1)
+        return z
 
 
-class PredictionHead(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int, pred_len: int):
+class StepFusionHead(nn.Module):
+    def __init__(self, dim: int, hidden_dim: int):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
+            nn.Linear(dim * 3, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, pred_len),
+            nn.Linear(hidden_dim, 1),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
+    def forward(self, z_img: torch.Tensor, z_hist: torch.Tensor, z_aux_steps: torch.Tensor) -> torch.Tensor:
+        h = z_aux_steps.size(1)
+        z_img_rep = z_img.unsqueeze(1).expand(-1, h, -1)
+        z_hist_rep = z_hist.unsqueeze(1).expand(-1, h, -1)
+        z = torch.cat([z_img_rep, z_hist_rep, z_aux_steps], dim=-1)
+        pred = self.net(z).squeeze(-1)
+        return pred
 
 
 class DCCALoss(nn.Module):
-    def __init__(self, outdim_size: int, use_all_singular_values: bool = True, r1: float = 1e-3, r2: float = 1e-3, eps: float = 1e-9):
+    def __init__(
+        self,
+        outdim_size: int,
+        use_all_singular_values: bool = True,
+        r1: float = 1e-3,
+        r2: float = 1e-3,
+        eps: float = 1e-6,
+    ):
         super().__init__()
         self.outdim_size = outdim_size
         self.use_all_singular_values = use_all_singular_values
@@ -297,35 +305,54 @@ class DCCALoss(nn.Module):
         H1bar = H1 - H1.mean(dim=0, keepdim=True)
         H2bar = H2 - H2.mean(dim=0, keepdim=True)
 
+        I1 = torch.eye(o1, device=H1.device, dtype=H1.dtype)
+        I2 = torch.eye(o2, device=H2.device, dtype=H2.dtype)
+
         sigma12 = (H1bar.t() @ H2bar) / (m - 1)
-        sigma11 = (H1bar.t() @ H1bar) / (m - 1) + self.r1 * torch.eye(o1, device=H1.device, dtype=H1.dtype)
-        sigma22 = (H2bar.t() @ H2bar) / (m - 1) + self.r2 * torch.eye(o2, device=H2.device, dtype=H2.dtype)
+        sigma11 = (H1bar.t() @ H1bar) / (m - 1) + self.r1 * I1
+        sigma22 = (H2bar.t() @ H2bar) / (m - 1) + self.r2 * I2
 
-        # eigen decomposition
-        D1, V1 = torch.linalg.eigh(sigma11)
-        D2, V2 = torch.linalg.eigh(sigma22)
+        sigma11 = 0.5 * (sigma11 + sigma11.t())
+        sigma22 = 0.5 * (sigma22 + sigma22.t())
 
-        pos_idx1 = D1 > self.eps
-        pos_idx2 = D2 > self.eps
+        jitter_list = [0.0, self.eps, 1e-5, 1e-4, 1e-3, 1e-2]
 
-        D1 = D1[pos_idx1]
-        V1 = V1[:, pos_idx1]
-        D2 = D2[pos_idx2]
-        V2 = V2[:, pos_idx2]
+        success = False
+        for jitter in jitter_list:
+            try:
+                D1, V1 = torch.linalg.eigh(sigma11 + jitter * I1)
+                D2, V2 = torch.linalg.eigh(sigma22 + jitter * I2)
+                success = True
+                break
+            except RuntimeError:
+                continue
+
+        if not success:
+            return H1.new_tensor(0.0)
+
+        D1 = torch.clamp(D1, min=self.eps)
+        D2 = torch.clamp(D2, min=self.eps)
 
         sigma11_inv_sqrt = V1 @ torch.diag(D1.pow(-0.5)) @ V1.t()
         sigma22_inv_sqrt = V2 @ torch.diag(D2.pow(-0.5)) @ V2.t()
 
         Tval = sigma11_inv_sqrt @ sigma12 @ sigma22_inv_sqrt
+        Tval = torch.nan_to_num(Tval, nan=0.0, posinf=0.0, neginf=0.0)
 
         if self.use_all_singular_values:
-            corr = torch.linalg.svdvals(Tval).sum()
+            s = torch.linalg.svdvals(Tval)
+            s = torch.nan_to_num(s, nan=0.0, posinf=0.0, neginf=0.0)
+            corr = s.sum()
         else:
             TT = Tval.t() @ Tval
+            TT = 0.5 * (TT + TT.t())
             eigvals = torch.linalg.eigvalsh(TT)
             eigvals = torch.clamp(eigvals, min=self.eps)
             topk = min(self.outdim_size, eigvals.numel())
             corr = torch.sqrt(eigvals.topk(topk).values).sum()
+
+        if torch.isnan(corr) or torch.isinf(corr):
+            return H1.new_tensor(0.0)
 
         return -corr
 
@@ -373,7 +400,7 @@ class DCCALateFusionModel(nn.Module):
         self.weekly_len = weekly_len
         self.lambda_dcca = lambda_dcca
 
-        aux_in_dim = daily_len + weekly_len + weather_feat_dim * pred_len + time_feat_dim * pred_len
+        step_aux_in_dim = daily_len + weekly_len + weather_feat_dim + time_feat_dim
 
         self.image_encoder = ImageEncoderConvLSTM_RICNN(
             out_dim=dim,
@@ -394,14 +421,18 @@ class DCCALateFusionModel(nn.Module):
             out_dim=dim,
         )
 
-        self.aux_encoder = MLPEncoder(
-            input_dim=aux_in_dim,
+        self.aux_encoder = HorizonWiseAuxEncoder(
+            step_input_dim=step_aux_in_dim,
             hidden_dim=aux_hidden,
             out_dim=dim,
             dropout=dropout,
         )
 
-        self.tabular_fusion = TabularFusion(hist_dim=dim, aux_dim=dim, out_dim=dim)
+        self.tabular_fusion = nn.Sequential(
+            nn.Linear(dim * 2, fusion_hidden),
+            nn.ReLU(),
+            nn.Linear(fusion_hidden, dim),
+        )
 
         self.image_proj = nn.Sequential(
             nn.Linear(dim, dcca_dim),
@@ -414,10 +445,9 @@ class DCCALateFusionModel(nn.Module):
             nn.Linear(dcca_dim, dcca_dim),
         )
 
-        self.pred_head = PredictionHead(
-            in_dim=dim * 2,
+        self.pred_head = StepFusionHead(
+            dim=dim,
             hidden_dim=pred_hidden,
-            pred_len=pred_len,
         )
 
         self.dcca_loss_fn = DCCALoss(
@@ -500,22 +530,23 @@ class DCCALateFusionModel(nn.Module):
         z_img = self.image_encoder(image_seq)
         z_hist = self.hist_encoder(past)
 
-        aux_input = torch.cat([daily, weekly, weather, time], dim=-1)
-        z_aux = self.aux_encoder(aux_input)
-        z_ts = self.tabular_fusion(z_hist, z_aux)
+        z_aux_steps = self.aux_encoder(daily, weekly, weather, time)
+        z_aux_global = z_aux_steps.mean(dim=1)
+
+        z_ts = self.tabular_fusion(torch.cat([z_hist, z_aux_global], dim=-1))
 
         z_img_dcca = self.image_proj(z_img)
         z_ts_dcca = self.tabular_proj(z_ts)
 
         dcca_loss = self.dcca_loss_fn(z_img_dcca, z_ts_dcca)
 
-        z_fused = torch.cat([z_img, z_ts], dim=-1)
-        pred = self.pred_head(z_fused)
+        pred = self.pred_head(z_img, z_hist, z_aux_steps)
 
         extra = {
             "z_img": z_img,
             "z_hist": z_hist,
-            "z_aux": z_aux,
+            "z_aux_steps": z_aux_steps,
+            "z_aux_global": z_aux_global,
             "z_ts": z_ts,
             "z_img_dcca": z_img_dcca,
             "z_ts_dcca": z_ts_dcca,
