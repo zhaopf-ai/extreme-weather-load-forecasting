@@ -11,5 +11,5 @@ The datasets used in this work are derived from real-world data sources in Austr
   
 <small>
 The image data can be downloaded from 
-<code>https://zenodo.org/records/17863145</code>
+https://zenodo.org/records/17863145
 </small>
