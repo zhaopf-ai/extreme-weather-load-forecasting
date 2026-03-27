@@ -117,8 +117,8 @@ def load_data_from_file(
 
     for i in range(his_length, N - pre_length + 1):
         X_past.append(load_norm[i - his_length:i])
-        X_daily.append(daily[i])
-        X_weekly.append(weekly[i])
+        X_daily.append(daily[i:i + pre_length])
+        X_weekly.append(weekly[i:i + pre_length])
         y.append(load_norm[i:i + pre_length])
 
         if add_weather_noise:
@@ -139,8 +139,8 @@ def load_data_from_file(
 
         t = time[i:i + pre_length]
 
-        X_w.append(w.reshape(-1))
-        X_t.append(t.reshape(-1))
+        X_w.append(w)
+        X_t.append(t)
 
         Y.append(year[i])
         M.append(month[i])
