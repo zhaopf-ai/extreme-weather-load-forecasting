@@ -37,8 +37,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--exp_root", type=str, default="results")
 
     p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--his_len", type=int, default=24)
-    p.add_argument("--pre_len", type=int, default=9)
+    p.add_argument("--his_len", type=int, default=6)
+    p.add_argument("--pre_len", type=int, default=1)
     p.add_argument("--add_weather_noise", action="store_true", default=True)
     p.add_argument("--no_weather_noise", dest="add_weather_noise", action="store_false")
     p.add_argument("--noise_seed", type=int, default=42)
