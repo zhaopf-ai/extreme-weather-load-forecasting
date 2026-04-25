@@ -8,8 +8,3 @@ The datasets used in this work are derived from real-world data sources in Austr
 
 - Numerical weather data from World Weather Online:  
   https://www.worldweatheronline.com
-  
-<small>
-The image data can be downloaded from 
-https://zenodo.org/records/17863145
-</small>
