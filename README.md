@@ -1,7 +1,4 @@
-This repository provides the source code for the paper:
-
-**(https://ieeexplore.ieee.org/document/11500566)**  
-*(IEEE Transactions on Smart Grid)*
+This repository provides the source code for the paper: **https://ieeexplore.ieee.org/document/11500566**  in IEEE Transactions on Smart Grid
 
 For questions or issues, please open a GitHub issue or contact:  
 📧 zhaopf@std.uestc.edu.cn
